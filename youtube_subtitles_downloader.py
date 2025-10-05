@@ -34,6 +34,7 @@ class YouTubeSubtitlesDownloader:
         self.language_var = tk.StringVar(value="ru")
         self.auto_translate_var = tk.BooleanVar(value=False)
         self.max_videos_var = tk.StringVar(value="50")
+        self.subtitle_format_var = tk.StringVar(value="with_timings")  # with_timings или without_timings
         self.is_downloading = False
         
         self.setup_ui()
@@ -81,6 +82,26 @@ class YouTubeSubtitlesDownloader:
         )
         lang_combo.grid(row=0, column=1, sticky=tk.W, pady=2, padx=(10, 0))
         
+        # Формат субтитров
+        ttk.Label(settings_frame, text="Формат субтитров:").grid(row=0, column=2, sticky=tk.W, pady=2, padx=(20, 0))
+        
+        format_frame = ttk.Frame(settings_frame)
+        format_frame.grid(row=0, column=3, sticky=tk.W, pady=2, padx=(10, 0))
+        
+        ttk.Radiobutton(
+            format_frame, 
+            text="С таймингами", 
+            variable=self.subtitle_format_var, 
+            value="with_timings"
+        ).pack(side=tk.LEFT)
+        
+        ttk.Radiobutton(
+            format_frame, 
+            text="Без таймингов", 
+            variable=self.subtitle_format_var, 
+            value="without_timings"
+        ).pack(side=tk.LEFT, padx=(10, 0))
+        
         # Обновляем значение по умолчанию
         self.language_var.set('ru - Русский')
         
@@ -95,7 +116,7 @@ class YouTubeSubtitlesDownloader:
             font=('TkDefaultFont', 8),
             foreground='gray'
         )
-        info_label.grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=5)
+        info_label.grid(row=2, column=0, columnspan=4, sticky=tk.W, pady=5)
         
         # Кнопки управления
         buttons_frame = ttk.Frame(main_frame)
@@ -291,7 +312,12 @@ class YouTubeSubtitlesDownloader:
                     break
             
             if found_file:
-                txt_file = os.path.join(output_dir, f'{safe_title}.{lang}.txt')
+                # Определяем формат файла в зависимости от выбора пользователя
+                if self.subtitle_format_var.get() == "with_timings":
+                    txt_file = os.path.join(output_dir, f'{safe_title}.{lang}.with_timings.txt')
+                else:
+                    txt_file = os.path.join(output_dir, f'{safe_title}.{lang}.txt')
+                    
                 self.convert_vtt_to_txt(found_file, txt_file)
                 os.remove(found_file)  # Удаляем VTT файл
                 self.log_message(f"✓ Субтитры сохранены{subtitle_type}: {video_title}")
@@ -305,7 +331,13 @@ class YouTubeSubtitlesDownloader:
                 if vtt_files:
                     # Берем первый найденный файл
                     found_file = vtt_files[0]
-                    txt_file = os.path.join(output_dir, f'{safe_title}.{lang}.txt')
+                    
+                    # Определяем формат файла в зависимости от выбора пользователя
+                    if self.subtitle_format_var.get() == "with_timings":
+                        txt_file = os.path.join(output_dir, f'{safe_title}.{lang}.with_timings.txt')
+                    else:
+                        txt_file = os.path.join(output_dir, f'{safe_title}.{lang}.txt')
+                        
                     self.convert_vtt_to_txt(found_file, txt_file)
                     os.remove(found_file)
                     self.log_message(f"✓ Субтитры сохранены (найден альтернативный язык): {video_title}")
@@ -319,7 +351,7 @@ class YouTubeSubtitlesDownloader:
             return False
     
     def convert_vtt_to_txt(self, vtt_file, txt_file):
-        """Конвертация VTT в простой текстовый формат"""
+        """Конвертация VTT в простой текстовый формат с таймингами или без"""
         try:
             with open(vtt_file, 'r', encoding='utf-8') as f:
                 content = f.read()
@@ -336,15 +368,20 @@ class YouTubeSubtitlesDownloader:
                 if not lines or lines[0].startswith('WEBVTT') or lines[0].startswith('NOTE'):
                     continue
                 
-                # Ищем строки с текстом (не временные метки)
+                time_line = None
+                subtitle_lines = []
+                
+                # Ищем строки с текстом и временные метки
                 for line in lines:
                     line = line.strip()
                     
-                    # Пропускаем временные метки и номера
-                    if (re.match(r'\d+:\d+:\d+', line) or 
-                        re.match(r'^\d+$', line) or 
-                        '-->' in line or
-                        not line):
+                    # Находим временную метку
+                    if '-->' in line:
+                        time_line = line
+                        continue
+                    
+                    # Пропускаем номера и пустые строки
+                    if re.match(r'^\d+$', line) or not line:
                         continue
                     
                     # Удаляем HTML теги и форматирование
@@ -352,31 +389,47 @@ class YouTubeSubtitlesDownloader:
                     clean_line = re.sub(r'&[a-zA-Z]+;', '', clean_line)  # HTML entities
                     clean_line = clean_line.strip()
                     
-                    # Добавляем только уникальные непустые строки
                     if clean_line and clean_line not in seen_lines:
-                        text_lines.append(clean_line)
+                        subtitle_lines.append(clean_line)
                         seen_lines.add(clean_line)
-            
-            # Объединяем строки в абзацы (каждые 2-3 строки)
-            paragraphs = []
-            current_paragraph = []
-            
-            for line in text_lines:
-                current_paragraph.append(line)
                 
-                # Создаем абзац каждые 2-3 строки или при окончании предложения
-                if (len(current_paragraph) >= 2 and 
-                    (line.endswith('.') or line.endswith('!') or line.endswith('?') or len(current_paragraph) >= 3)):
-                    paragraphs.append(' '.join(current_paragraph))
-                    current_paragraph = []
-            
-            # Добавляем оставшиеся строки
-            if current_paragraph:
-                paragraphs.append(' '.join(current_paragraph))
+                # Обрабатываем блок в зависимости от выбранного формата
+                if self.subtitle_format_var.get() == "with_timings" and time_line and subtitle_lines:
+                    # Извлекаем начальное время
+                    start_time = time_line.split('-->')[0].strip()
+                    # Убираем миллисекунды для лучшей читаемости
+                    start_time = re.sub(r'\.\d+', '', start_time)
+                    
+                    # Добавляем временную метку и текст
+                    text_lines.append(f"[{start_time}] {' '.join(subtitle_lines)}")
+                elif subtitle_lines:
+                    # Без таймингов - просто добавляем текст
+                    text_lines.append(' '.join(subtitle_lines))
             
             # Сохраняем в TXT файл
             with open(txt_file, 'w', encoding='utf-8') as f:
-                f.write('\n\n'.join(paragraphs))
+                if self.subtitle_format_var.get() == "with_timings":
+                    # С таймингами - каждая строка с временной меткой
+                    f.write('\n'.join(text_lines))
+                else:
+                    # Без таймингов - объединяем в абзацы
+                    paragraphs = []
+                    current_paragraph = []
+                    
+                    for line in text_lines:
+                        current_paragraph.append(line)
+                        
+                        # Создаем абзац каждые 2-3 строки или при окончании предложения
+                        if (len(current_paragraph) >= 2 and 
+                            (line.endswith('.') or line.endswith('!') or line.endswith('?') or len(current_paragraph) >= 3)):
+                            paragraphs.append(' '.join(current_paragraph))
+                            current_paragraph = []
+                    
+                    # Добавляем оставшиеся строки
+                    if current_paragraph:
+                        paragraphs.append(' '.join(current_paragraph))
+                    
+                    f.write('\n\n'.join(paragraphs))
                 
         except Exception as e:
             self.log_message(f"Ошибка конвертации VTT в TXT: {str(e)}")
@@ -399,6 +452,10 @@ class YouTubeSubtitlesDownloader:
             
             self.log_message("Получение информации о видео/канале...")
             info = self.get_video_info(url)
+            
+            # Логируем выбранный формат
+            format_text = "с таймингами" if self.subtitle_format_var.get() == "with_timings" else "без таймингов"
+            self.log_message(f"Формат субтитров: {format_text}")
             
             if 'entries' in info:
                 # Это плейлист или канал
